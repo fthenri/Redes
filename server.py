@@ -1,50 +1,87 @@
-# servidor.py
-
 import socket
 
-# Define o host e a porta
 HOST = '127.0.0.1'  # Endereço IP do Servidor (localhost)
 PORT = 65432        # Porta que o Servidor vai escutar
 
 print("Iniciando servidor...")
 
-# socket.AF_INET especifica que estamos usando IPv4
-# socket.SOCK_STREAM especifica que estamos usando TCP
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    # Vincula o socket ao host e porta especificados
     s.bind((HOST, PORT))
-    
-    # Coloca o socket em modo de escuta
     s.listen()
-    
     print(f"Servidor escutando em {HOST}:{PORT}")
-    
-    # Aceita uma nova conexão
-    # s.accept() bloqueia a execução até que uma conexão seja recebida
-    # Retorna um novo objeto socket (conn) para a conexão e o endereço (addr) do cliente
+
+    # O servidor fica esperando por conexões
     conn, addr = s.accept()
-    
-    # Usa um 'with' para garantir que o socket da conexão (conn) seja fechado no final
     with conn:
         print(f"Conexão estabelecida por {addr}")
         
-        while True:
-            # Recebe dados do cliente (buffer de 1024 bytes)
-            data = conn.recv(1024)
-            
-            # Se não receber dados (data vazio), o cliente desconectou
-            if not data:
-                print("Cliente desconectou.")
-                break
+        # Variáveis para guardar os parâmetros da conexão
+        modo_operacao = ""
+        tamanho_max_msg = 0
+
+        # ---------- HANDSHAKE INICIAL ----------
+        handshake_data = conn.recv(1024)
+        if not handshake_data:
+            print("Cliente desconectou antes do handshake.")
+        else:
+            handshake_msg = handshake_data.decode("utf-8")
+            print(f"Handshake recebido: {handshake_msg}")
+
+            if handshake_msg.startswith("HELLO"):
+                try:
+                    parametros = {}
+                    partes = handshake_msg.split(";")[1:]
+                    for p in partes:
+                        k, v = p.split("=")
+                        parametros[k.strip().upper()] = v.strip()
+
+                    # Armazena os parâmetros negociados
+                    modo_operacao = parametros.get("MODE", "texto")
+                    # --- ALTERAÇÃO: Converte o tamanho para inteiro e armazena ---
+                    tamanho_max_msg = int(parametros.get("MAX", "1024"))
+                    
+                    print(f"Modo acordado: {modo_operacao}, Tamanho máximo da string: {tamanho_max_msg}")
+
+                    # Resposta de confirmação
+                    resposta_hs = f"OK;MODE={modo_operacao};MAX={tamanho_max_msg}"
+                    conn.sendall(resposta_hs.encode("utf-8"))
+                    print("Handshake confirmado com o cliente.")
+
+                except (ValueError, IndexError) as e:
+                    print(f"Erro ao analisar handshake: {e}")
+                    conn.sendall("ERRO Formato de handshake inválido".encode("utf-8"))
+                    conn.close()
+                    exit()
+            else:
+                conn.sendall("ERRO Handshake esperado".encode("utf-8"))
+                conn.close()
+                exit()
+
+            # ---------- TROCA DE MENSAGENS NORMAL ----------
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    print(f"Cliente {addr} desconectou.")
+                    break
+
+                mensagem_cliente = data.decode('utf-8')
+
+                # --- REQUISITO ATENDIDO: A MENSAGEM APARECE NO TERMINAL DO SERVIDOR ---
+                print(f"Cliente diz: {mensagem_cliente}")
+                print(f"o tamanho da mensagem foi: {len(mensagem_cliente)}")
                 
-            # Decodifica os bytes recebidos para string (usando utf-8)
-            mensagem_cliente = data.decode('utf-8')
-            print(f"Cliente: {mensagem_cliente}")
-            
-            # Prepara e envia uma resposta de volta para o cliente
-            # A resposta deve ser codificada para bytes (usando utf-8)
-            resposta = f"Servidor recebeu sua mensagem: '{mensagem_cliente}'"
-            conn.sendall(resposta.encode('utf-8'))
-            print("Resposta enviada ao cliente.")
+                if mensagem_cliente.lower() == 'sair':
+                    print(f"Cliente {addr} solicitou o encerramento.")
+                    break
+
+                # Resposta padrão
+                resposta = f"Recebido: '{mensagem_cliente}'"
+                
+                # Opcional: checagem de segurança no lado do servidor
+                if len(mensagem_cliente) > tamanho_max_msg:
+                    resposta = f"ERRO: Sua mensagem excedeu o limite de {tamanho_max_msg} caracteres."
+                
+                conn.sendall(resposta.encode('utf-8'))
+                # print("Resposta enviada ao cliente.") # Descomente se quiser mais verbosidade
 
 print("Servidor finalizado.")
