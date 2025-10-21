@@ -3,8 +3,6 @@ import random
 import time
 import math
 
-# --- Funções de Suporte (caesar_cipher, calculate_checksum, create_packet) - Sem alterações ---
-
 def caesar_cipher(text, shift, encrypt=True):
     if not encrypt:
         shift = -shift
@@ -25,18 +23,24 @@ def create_packet(seq_num, data_chunk_encrypted):
     checksum = calculate_checksum(data_chunk_encrypted)
     return f"TIPO:DATA|SEQ:{seq_num}|CHK:{checksum}|DATA:{data_chunk_encrypted}"
 
-# --- Configurações do Cliente ---
 HOST = '127.0.0.1'
 PORT = 65432
 CHAVE_CIFRA = 5
 TIMEOUT = 4
 
-# --- MUDANÇA PRINCIPAL: Loop para enviar múltiplas mensagens ---
 while True:
-    # --- Interação com o Usuário para cada nova mensagem ---
     print("\n--- Configuração da Nova Mensagem ---")
-    MSG_SIZE = int(input("Tamanho dos caracteres por mensagem/pacote (ex: 10): "))
-    WINDOW_SIZE = int(input("Tamanho da janela de envio (ex: 4): "))
+    
+    while True:
+        try:
+            MSG_SIZE = int(input("Tamanho dos caracteres por mensagem/pacote (MÁXIMO 4): "))
+            if 0 < MSG_SIZE <= 4:
+                break
+            else:
+                print("[ERRO] O tamanho da carga útil deve ser um número entre 1 e 4.")
+        except ValueError:
+            print("[ERRO] Entrada inválida. Por favor, digite um número.")
+    
     RECOVERY_MODE = input("Modo de recuperação (gbn / sr): ").lower()
     OP_MODE = input("Modo de operação (integro / perda / erro): ").lower()
 
@@ -53,7 +57,6 @@ while True:
     MESSAGE_TO_SEND = input("Digite a mensagem longa a ser enviada: \n")
     print("-" * 30)
 
-    # --- Lógica de Conexão e Envio (agora dentro do loop) ---
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         
@@ -61,9 +64,14 @@ while True:
             print("Conectando ao servidor...")
             s.connect((HOST, PORT))
             
-            handshake_msg = f"WINDOW={WINDOW_SIZE};RECOVERY={RECOVERY_MODE}"
+            handshake_msg = f"RECOVERY={RECOVERY_MODE}"
             s.sendall(handshake_msg.encode('utf-8'))
-            s.recv(1024)
+            
+            handshake_response = s.recv(1024).decode('utf-8')
+            params = dict(item.split("=") for item in handshake_response.split(";"))
+            WINDOW_SIZE = int(params.get("WINDOW"))
+            
+            print(f"[HANDSHAKE] Servidor definiu a janela como: {WINDOW_SIZE}")
 
             packets = []
             num_packets = math.ceil(len(MESSAGE_TO_SEND) / MSG_SIZE)
@@ -163,7 +171,6 @@ while True:
         except Exception as e:
             print(f"Ocorreu um erro: {e}")
 
-    # --- Pergunta ao usuário se deseja continuar ---
     if input("Deseja enviar outra mensagem? (s/n): ").lower() != 's':
         print("Encerrando cliente.")
         break

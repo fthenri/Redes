@@ -2,8 +2,6 @@ import socket
 import random
 import time
 
-# --- Funções de Suporte (caesar_cipher, calculate_checksum) - Sem alterações ---
-
 def caesar_cipher(text, shift, encrypt=False):
     if not encrypt:
         shift = -shift
@@ -20,10 +18,10 @@ def caesar_cipher(text, shift, encrypt=False):
 def calculate_checksum(data):
     return sum(ord(char) for char in data)
 
-# --- Configurações do Servidor ---
 HOST = '127.0.0.1'
 PORT = 65432
 CHAVE_CIFRA = 5
+SERVER_WINDOW_SIZE = 5
 
 print("Iniciando servidor...")
 
@@ -32,32 +30,32 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.listen()
     print(f"Servidor escutando em {HOST}:{PORT}, pronto para aceitar conexões.")
 
-    # --- MUDANÇA PRINCIPAL: Loop para aceitar múltiplos clientes em sequência ---
     while True:
         print("\n-----------------------------------------")
         print("Aguardando nova conexão de cliente...")
         conn, addr = s.accept()
         
-        # Desabilita o Algoritmo de Nagle para esta conexão
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         with conn:
             print(f"Conexão estabelecida por {addr}")
 
             try:
-                # 1. ---------- HANDSHAKE APRIMORADO ----------
                 handshake_data = conn.recv(1024).decode('utf-8')
                 if not handshake_data:
                     raise ConnectionError("Cliente desconectou antes do handshake.")
                 
                 params = dict(item.split("=") for item in handshake_data.split(";"))
-                WINDOW_SIZE = int(params.get("WINDOW", "4"))
                 RECOVERY_MODE = params.get("RECOVERY", "gbn")
                 
-                print(f"[HANDSHAKE] Cliente configurado com: Modo={RECOVERY_MODE.upper()}, Janela={WINDOW_SIZE}")
-                conn.sendall(b"OK")
+                WINDOW_SIZE = SERVER_WINDOW_SIZE 
+                
+                print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}.")
+                print(f"[HANDSHAKE] Servidor DEFINIU Janela={WINDOW_SIZE}.")
+                
+                handshake_response = f"WINDOW={WINDOW_SIZE}"
+                conn.sendall(handshake_response.encode('utf-8'))
 
-                # 2. ---------- RECEBIMENTO E PROCESSAMENTO DE MENSAGENS ----------
                 reconstructed_message = {}
                 expected_seq_num = 0
                 selective_repeat_buffer = {}
@@ -85,7 +83,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                             print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Descartado.")
                             continue
 
-                        # Lógica GBN com Delayed ACK
                         if RECOVERY_MODE == 'gbn':
                             if seq_num == expected_seq_num:
                                 print(f"[SERVER] Pacote Seq={seq_num} recebido em ordem. Aguardando próximos...")
@@ -100,7 +97,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                                 print(f"[SERVER] ENVIANDO ACK IMEDIATO: ACK={expected_seq_num} para forçar retransmissão.")
                                 ack_is_pending = False
                         
-                        # Lógica da Repetição Seletiva
                         elif RECOVERY_MODE == 'sr':
                             if seq_num >= expected_seq_num:
                                 data_decrypted = caesar_cipher(data_encrypted, CHAVE_CIFRA, encrypt=False)
@@ -111,7 +107,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                                 while expected_seq_num in selective_repeat_buffer:
                                     reconstructed_message[expected_seq_num] = selective_repeat_buffer.pop(expected_seq_num)
                                     expected_seq_num += 1
-                            else: # ACK para pacote antigo
+                            else:
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
 
@@ -127,7 +123,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     conn.sendall(ack_packet)
                     print(f"[SERVER] Finalizando. ENVIANDO ACK CUMULATIVO FINAL: ACK={expected_seq_num} (confirmando tudo até {expected_seq_num-1}).")
 
-                # 3. ---------- RECONSTRUÇÃO FINAL DA MENSAGEM ----------
                 print("\n" + "="*40)
                 print("TRANSMISSÃO FINALIZADA. RECONSTRUINDO MENSAGEM...")
                 if not reconstructed_message:
