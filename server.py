@@ -51,7 +51,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 RECOVERY_MODE = params.get("RECOVERY", "gbn")
                 CLIENT_WINDOW = params.get("WINDOW", "")
                 
-                # Usar a janela do servidor (fixa) ou a do cliente se for menor
+
                 if CLIENT_WINDOW and CLIENT_WINDOW.isdigit():
                     client_window_size = int(CLIENT_WINDOW)
                     WINDOW_SIZE = min(SERVER_WINDOW_SIZE, client_window_size)

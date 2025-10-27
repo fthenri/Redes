@@ -44,7 +44,6 @@ while True:
     RECOVERY_MODE = input("Modo de recuperação (gbn / sr): ").lower()
     OP_MODE = input("Modo de operação (integro / perda / erro): ").lower()
     
-    # Configuração do tamanho da janela do cliente
     while True:
         try:
             CLIENT_WINDOW_SIZE = int(input("Tamanho da janela do cliente (1-5): "))
@@ -75,7 +74,7 @@ while True:
             print("Conectando ao servidor...")
             s.connect((HOST, PORT))
             
-            # Incluir tamanho da janela no handshake
+        
             handshake_msg = f"RECOVERY={RECOVERY_MODE};WINDOW={CLIENT_WINDOW_SIZE}"
             s.sendall(handshake_msg.encode('utf-8'))
             print(f"[CLIENT] Handshake enviado: {handshake_msg}")
