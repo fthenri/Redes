@@ -24,12 +24,12 @@ CHAVE_CIFRA = 5
 SERVER_WINDOW_SIZE = 5
 
 print("Iniciando servidor...")
+print(f"Servidor escutando em {HOST}:{PORT}, pronto para aceitar conexões.")
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind((HOST, PORT))
     s.listen()
-    print(f"Servidor escutando em {HOST}:{PORT}, pronto para aceitar conexões.")
-
+    
     while True:
         print("\n-----------------------------------------")
         print("Aguardando nova conexão de cliente...")
@@ -49,10 +49,17 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 
                 params = dict(item.split("=") for item in handshake_data.split(";"))
                 RECOVERY_MODE = params.get("RECOVERY", "gbn")
+                CLIENT_WINDOW = params.get("WINDOW", "")
                 
-                WINDOW_SIZE = SERVER_WINDOW_SIZE 
+                # Usar a janela do servidor (fixa) ou a do cliente se for menor
+                if CLIENT_WINDOW and CLIENT_WINDOW.isdigit():
+                    client_window_size = int(CLIENT_WINDOW)
+                    WINDOW_SIZE = min(SERVER_WINDOW_SIZE, client_window_size)
+                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()} com Janela={client_window_size}.")
+                else:
+                    WINDOW_SIZE = SERVER_WINDOW_SIZE
+                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}.")
                 
-                print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}.")
                 print(f"[HANDSHAKE] Servidor DEFINIU Janela={WINDOW_SIZE}.")
                 
                 handshake_response = f"WINDOW={WINDOW_SIZE}"
