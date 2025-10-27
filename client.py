@@ -66,6 +66,7 @@ while True:
             
             handshake_msg = f"RECOVERY={RECOVERY_MODE}"
             s.sendall(handshake_msg.encode('utf-8'))
+            print(f"[CLIENT] Handshake enviado: {handshake_msg}")
             
             handshake_response = s.recv(1024).decode('utf-8')
             params = dict(item.split("=") for item in handshake_response.split(";"))
@@ -74,31 +75,38 @@ while True:
             print(f"[HANDSHAKE] Servidor definiu a janela como: {WINDOW_SIZE}")
 
             packets = []
+            original_chunks = []
             num_packets = math.ceil(len(MESSAGE_TO_SEND) / MSG_SIZE)
             for i in range(num_packets):
                 chunk = MESSAGE_TO_SEND[i*MSG_SIZE : (i+1)*MSG_SIZE]
                 encrypted_chunk = caesar_cipher(chunk, CHAVE_CIFRA, encrypt=True)
                 packets.append(create_packet(i, encrypted_chunk))
+                original_chunks.append(chunk)
 
             send_base = 0
             next_seq_num = 0
             acks_received = [False] * num_packets
+            nacks_received = set()
             recv_buffer = ""
 
             while send_base < num_packets:
                 while next_seq_num < send_base + WINDOW_SIZE and next_seq_num < num_packets:
                     packet_to_send = packets[next_seq_num]
+                    original_data = original_chunks[next_seq_num]
+                    encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
+                    
                     if OP_MODE == 'perda' and random.random() < PROB_PERDA:
-                        print(f"[CLIENT] SIMULANDO PERDA do pacote Seq={next_seq_num}.")
+                        print(f"[CLIENT] SIMULANDO PERDA do pacote Seq={next_seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
                     elif OP_MODE == 'erro' and random.random() < PROB_ERRO:
                         parts = dict(item.split(":", 1) for item in packet_to_send.split("|"))
                         bad_checksum = int(parts['CHK']) + 1
                         bad_packet = f"TIPO:DATA|SEQ:{parts['SEQ']}|CHK:{bad_checksum}|DATA:{parts['DATA']}"
                         s.sendall(bad_packet.encode('utf-8'))
-                        print(f"[CLIENT] SIMULANDO ERRO no pacote Seq={next_seq_num}.")
+                        print(f"[CLIENT] SIMULANDO ERRO no pacote Seq={next_seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}' (Checksum errado: {bad_checksum})")
                     else:
                         s.sendall(packet_to_send.encode('utf-8'))
-                        print(f"[CLIENT] Enviando pacote Seq={next_seq_num}.")
+                        checksum = calculate_checksum(encrypted_data)
+                        print(f"[CLIENT] Enviando pacote Seq={next_seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}' (Checksum: {checksum})")
                     next_seq_num += 1
                     time.sleep(0.1)
 
@@ -112,31 +120,47 @@ while True:
                         if data_received:
                             recv_buffer += data_received
                         
-                        while 'TIPO:ACK' in recv_buffer:
+                        while 'TIPO:' in recv_buffer:
                             try:
                                 packet_end_idx = recv_buffer.find('TIPO:', 1)
                                 if packet_end_idx != -1:
-                                    single_ack_str = recv_buffer[:packet_end_idx]
+                                    single_packet_str = recv_buffer[:packet_end_idx]
                                     recv_buffer = recv_buffer[packet_end_idx:]
                                 else:
-                                    single_ack_str = recv_buffer
+                                    single_packet_str = recv_buffer
                                     recv_buffer = ""
                                 
-                                ack_parts = dict(item.split(":", 1) for item in single_ack_str.split("|"))
-                                ack_seq = int(ack_parts.get("SEQ"))
+                                packet_parts = dict(item.split(":", 1) for item in single_packet_str.split("|"))
+                                packet_type = packet_parts.get("TIPO")
+                                seq_num = int(packet_parts.get("SEQ"))
 
-                                if RECOVERY_MODE == 'gbn':
-                                    print(f"[CLIENT] ACK cumulativo recebido: {ack_seq}.")
-                                    for i in range(send_base, ack_seq):
-                                        if i < len(acks_received): acks_received[i] = True
-                                    send_base = ack_seq
+                                if packet_type == 'ACK':
+                                    print(f"[CLIENT] ACK cumulativo recebido: {seq_num}.")
+                                    if RECOVERY_MODE == 'gbn':
+                                        for i in range(send_base, seq_num):
+                                            if i < len(acks_received): 
+                                                acks_received[i] = True
+                                        send_base = seq_num
+                                    
+                                    elif RECOVERY_MODE == 'sr':
+                                        if seq_num < len(acks_received) and not acks_received[seq_num]:
+                                            print(f"[CLIENT] ACK recebido para Seq={seq_num}.")
+                                            acks_received[seq_num] = True
+                                            if seq_num in nacks_received:
+                                                nacks_received.remove(seq_num)
+                                        while send_base < num_packets and acks_received[send_base]:
+                                            send_base += 1
                                 
-                                elif RECOVERY_MODE == 'sr':
-                                    if ack_seq < len(acks_received) and not acks_received[ack_seq]:
-                                        print(f"[CLIENT] ACK recebido para Seq={ack_seq}.")
-                                        acks_received[ack_seq] = True
-                                    while send_base < num_packets and acks_received[send_base]:
-                                        send_base += 1
+                                elif packet_type == 'NACK':
+                                    print(f"[CLIENT] NACK recebido para Seq={seq_num}.")
+                                    if RECOVERY_MODE == 'sr':
+                                        nacks_received.add(seq_num)
+                                        original_data = original_chunks[seq_num]
+                                        encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
+                                        print(f"[CLIENT] Retransmitindo pacote NACKado Seq={seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
+                                        s.sendall(packets[seq_num].encode('utf-8'))
+                                        time.sleep(0.1)
+                                        
                             except (ValueError, IndexError):
                                 break
                     except BlockingIOError:
@@ -158,12 +182,16 @@ while True:
                     elif RECOVERY_MODE == 'sr':
                         print(f"[CLIENT] SELECTIVE REPEAT: Retransmitindo pacotes perdidos.")
                         for i in range(send_base, next_seq_num):
-                            if not acks_received[i]:
-                                print(f"[CLIENT] Retransmitindo pacote perdido Seq={i}.")
+                            if not acks_received[i] or i in nacks_received:
+                                original_data = original_chunks[i]
+                                encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
+                                print(f"[CLIENT] Retransmitindo pacote perdido Seq={i}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
                                 s.sendall(packets[i].encode('utf-8'))
                                 time.sleep(0.1)
+                        nacks_received.clear()
 
             s.sendall(b"FIN")
+            print(f"[CLIENT] FIN enviado.")
             print("\n[CLIENT] Mensagem enviada completamente.")
 
         except ConnectionRefusedError:

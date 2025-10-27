@@ -45,6 +45,8 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if not handshake_data:
                     raise ConnectionError("Cliente desconectou antes do handshake.")
                 
+                print(f"[SERVER] Handshake recebido: {handshake_data}")
+                
                 params = dict(item.split("=") for item in handshake_data.split(";"))
                 RECOVERY_MODE = params.get("RECOVERY", "gbn")
                 
@@ -79,27 +81,35 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         checksum_received = int(parts.get("CHK"))
                         data_encrypted = parts.get("DATA")
 
-                        if calculate_checksum(data_encrypted) != checksum_received:
-                            print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Descartado.")
+                        checksum_calculated = calculate_checksum(data_encrypted)
+                        data_decrypted = caesar_cipher(data_encrypted, CHAVE_CIFRA, encrypt=False)
+
+                        if checksum_calculated != checksum_received:
+                            print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received} vs Calculado: {checksum_calculated}). Enviando NACK.")
+                            nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
+                            conn.sendall(nack_packet)
+                            print(f"[SERVER] ENVIANDO NACK para Seq={seq_num}.")
                             continue
+
+                        print(f"[SERVER] Pacote Seq={seq_num} recebido. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received})")
 
                         if RECOVERY_MODE == 'gbn':
                             if seq_num == expected_seq_num:
                                 print(f"[SERVER] Pacote Seq={seq_num} recebido em ordem. Aguardando próximos...")
-                                data_decrypted = caesar_cipher(data_encrypted, CHAVE_CIFRA, encrypt=False)
                                 reconstructed_message[seq_num] = data_decrypted
                                 expected_seq_num += 1
                                 ack_is_pending = True
                             else:
-                                print(f"[SERVER] Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Descartado.")
+                                print(f"[SERVER] Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Conteúdo: '{data_decrypted}'. Enviando NACK.")
+                                nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
+                                conn.sendall(nack_packet)
+                                print(f"[SERVER] ENVIANDO NACK para Seq={seq_num}.")
                                 ack_packet = f"TIPO:ACK|SEQ:{expected_seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
-                                print(f"[SERVER] ENVIANDO ACK IMEDIATO: ACK={expected_seq_num} para forçar retransmissão.")
                                 ack_is_pending = False
                         
                         elif RECOVERY_MODE == 'sr':
                             if seq_num >= expected_seq_num:
-                                data_decrypted = caesar_cipher(data_encrypted, CHAVE_CIFRA, encrypt=False)
                                 selective_repeat_buffer[seq_num] = data_decrypted
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
@@ -110,6 +120,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                             else:
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
+                                print(f"[SERVER] Pacote duplicado Seq={seq_num}. Reenviando ACK.")
 
                     except socket.timeout:
                         if ack_is_pending:
