@@ -88,22 +88,39 @@ while True:
             packets = []
             original_chunks = []
             num_packets = math.ceil(len(MESSAGE_TO_SEND) / MSG_SIZE)
+            
+            # Adicionado para evitar erro se a mensagem for vazia
+            if num_packets == 0:
+                print("Nenhuma mensagem para enviar.")
+                s.sendall(b"FIN")
+                continue
+
+            # ALTERAÇÃO: Numeração baseada em 1
             for i in range(num_packets):
+                seq_num = i + 1 # Numeração começa em 1
                 chunk = MESSAGE_TO_SEND[i*MSG_SIZE : (i+1)*MSG_SIZE]
                 encrypted_chunk = caesar_cipher(chunk, CHAVE_CIFRA, encrypt=True)
-                packets.append(create_packet(i, encrypted_chunk))
+                packets.append(create_packet(seq_num, encrypted_chunk))
                 original_chunks.append(chunk)
 
-            send_base = 0
-            next_seq_num = 0
-            acks_received = [False] * num_packets
+            # ALTERAÇÃO: Numeração baseada em 1
+            send_base = 1
+            next_seq_num = 1
+            # Ajusta o tamanho do array para 1-based index
+            acks_received = [False] * (num_packets + 1)
             nacks_received = set()
             recv_buffer = ""
 
-            while send_base < num_packets:
-                while next_seq_num < send_base + WINDOW_SIZE and next_seq_num < num_packets:
-                    packet_to_send = packets[next_seq_num]
-                    original_data = original_chunks[next_seq_num]
+            # ALTERAÇÃO: Condição de loop para 1-based
+            while send_base <= num_packets:
+                # ALTERAÇÃO: Condição de loop para 1-based
+                while next_seq_num < send_base + WINDOW_SIZE and next_seq_num <= num_packets:
+                    
+                    # ALTERAÇÃO: Mapeia o número de sequência (1..N) para o índice do array (0..N-1)
+                    packet_index = next_seq_num - 1
+                    
+                    packet_to_send = packets[packet_index]
+                    original_data = original_chunks[packet_index]
                     encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
                     
                     if OP_MODE == 'perda' and random.random() < PROB_PERDA:
@@ -146,31 +163,42 @@ while True:
                                 seq_num = int(packet_parts.get("SEQ"))
 
                                 if packet_type == 'ACK':
-                                    print(f"[CLIENT] ACK cumulativo recebido: {seq_num}.")
+                                    
                                     if RECOVERY_MODE == 'gbn':
-                                        for i in range(send_base, seq_num):
-                                            if i < len(acks_received): 
-                                                acks_received[i] = True
-                                        send_base = seq_num
+                                        # ALTERAÇÃO: Lógica GBN (ACK N confirma P N)
+                                        print(f"[CLIENT] ACK recebido para Pacote={seq_num}.")
+                                        # Um ACK N confirma P N (e todos antes dele, por natureza do GBN).
+                                        # A base avança para o PRÓXIMO pacote esperado (N+1).
+                                        if (seq_num + 1) > send_base:
+                                            send_base = seq_num + 1
+                                            # Reinicia o timer (implicitamente, pois sairá do loop de espera)
+                                            timeout_start = time.time()
+                                        # Se for um ACK duplicado (ex: ACK 1), send_base não muda (1+1 !> 2)
+                                        # e o timer eventualmente estoura.
                                     
                                     elif RECOVERY_MODE == 'sr':
-                                        if seq_num < len(acks_received) and not acks_received[seq_num]:
+                                        # ALTERAÇÃO: Ajustado para 1-based index
+                                        if seq_num <= num_packets and not acks_received[seq_num]:
                                             print(f"[CLIENT] ACK recebido para Seq={seq_num}.")
                                             acks_received[seq_num] = True
                                             if seq_num in nacks_received:
                                                 nacks_received.remove(seq_num)
-                                        while send_base < num_packets and acks_received[send_base]:
+                                        # ALTERAÇÃO: Ajustado para 1-based index
+                                        while send_base <= num_packets and acks_received[send_base]:
                                             send_base += 1
                                 
                                 elif packet_type == 'NACK':
                                     print(f"[CLIENT] NACK recebido para Seq={seq_num}.")
                                     if RECOVERY_MODE == 'sr':
-                                        nacks_received.add(seq_num)
-                                        original_data = original_chunks[seq_num]
-                                        encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
-                                        print(f"[CLIENT] Retransmitindo pacote NACKado Seq={seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
-                                        s.sendall(packets[seq_num].encode('utf-8'))
-                                        time.sleep(0.1)
+                                        # ALTERAÇÃO: Mapeia o número de sequência (1..N) para o índice do array (0..N-1)
+                                        packet_index_nack = seq_num - 1
+                                        if seq_num <= num_packets and not acks_received[seq_num]:
+                                            nacks_received.add(seq_num)
+                                            original_data = original_chunks[packet_index_nack]
+                                            encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
+                                            print(f"[CLIENT] Retransmitindo pacote NACKado Seq={seq_num}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
+                                            s.sendall(packets[packet_index_nack].encode('utf-8'))
+                                            time.sleep(0.1)
                                         
                             except (ValueError, IndexError):
                                 break
@@ -192,12 +220,15 @@ while True:
                         next_seq_num = send_base
                     elif RECOVERY_MODE == 'sr':
                         print(f"[CLIENT] SELECTIVE REPEAT: Retransmitindo pacotes perdidos.")
+                        # ALTERAÇÃO: Loop 1-based
                         for i in range(send_base, next_seq_num):
                             if not acks_received[i] or i in nacks_received:
-                                original_data = original_chunks[i]
+                                # ALTERAÇÃO: Mapeia o número de sequência (1..N) para o índice do array (0..N-1)
+                                packet_index_sr = i - 1
+                                original_data = original_chunks[packet_index_sr]
                                 encrypted_data = caesar_cipher(original_data, CHAVE_CIFRA, encrypt=True)
                                 print(f"[CLIENT] Retransmitindo pacote perdido Seq={i}. Conteúdo: '{original_data}' -> '{encrypted_data}'")
-                                s.sendall(packets[i].encode('utf-8'))
+                                s.sendall(packets[packet_index_sr].encode('utf-8'))
                                 time.sleep(0.1)
                         nacks_received.clear()
 

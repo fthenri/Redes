@@ -66,10 +66,13 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 conn.sendall(handshake_response.encode('utf-8'))
 
                 reconstructed_message = {}
-                expected_seq_num = 0
+                # ALTERAÇÃO: Numeração baseada em 1
+                expected_seq_num = 1
                 selective_repeat_buffer = {}
-                ack_is_pending = False
-                conn.settimeout(0.5)
+                
+                # ALTERAÇÃO: Removido 'ack_is_pending' e 'conn.settimeout(0.5)'
+                # Socket agora é bloqueante por padrão para aguardar pacotes
+                conn.settimeout(None)
 
                 while True:
                     try:
@@ -92,28 +95,53 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         data_decrypted = caesar_cipher(data_encrypted, CHAVE_CIFRA, encrypt=False)
 
                         if checksum_calculated != checksum_received:
-                            print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received} vs Calculado: {checksum_calculated}). Enviando NACK.")
-                            nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
-                            conn.sendall(nack_packet)
-                            print(f"[SERVER] ENVIANDO NACK para Seq={seq_num}.")
+                            print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received} vs Calculado: {checksum_calculated}).")
+                            
+                            # A lógica de NACK para ERRO (não PERDA) permanece
+                            if RECOVERY_MODE == 'sr':
+                                nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
+                                conn.sendall(nack_packet)
+                                print(f"[SERVER] (SR) ENVIANDO NACK para Seq={seq_num}.")
+                            elif RECOVERY_MODE == 'gbn':
+                                # Mantendo a lógica original do arquivo (enviar NACK) para o MODO ERRO.
+                                # A sua solicitação foi apenas para o MODO PERDA.
+                                print(f"[SERVER] (GBN) Pacote com erro. Enviando NACK.")
+                                nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
+                                conn.sendall(nack_packet)
+
                             continue
 
                         print(f"[SERVER] Pacote Seq={seq_num} recebido. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received})")
 
                         if RECOVERY_MODE == 'gbn':
+                            # --- ESTA É A LÓGICA GBN SOLICITADA ---
+                            
                             if seq_num == expected_seq_num:
-                                print(f"[SERVER] Pacote Seq={seq_num} recebido em ordem. Aguardando próximos...")
+                                # Cenário 1 (Recebe P1) ou Cenário 2 (Recebe P1 após retransmissão)
+                                print(f"[SERVER] Pacote Seq={seq_num} recebido em ordem.")
                                 reconstructed_message[seq_num] = data_decrypted
-                                expected_seq_num += 1
-                                ack_is_pending = True
-                            else:
-                                print(f"[SERVER] Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Conteúdo: '{data_decrypted}'. Enviando NACK.")
-                                nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
-                                conn.sendall(nack_packet)
-                                print(f"[SERVER] ENVIANDO NACK para Seq={seq_num}.")
-                                ack_packet = f"TIPO:ACK|SEQ:{expected_seq_num}".encode('utf-8')
+                                
+                                # Envia ACK imediato (ACK N para Pacote N)
+                                ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
-                                ack_is_pending = False
+                                print(f"[SERVER] ENVIANDO ACK para Seq={seq_num}.")
+                                
+                                expected_seq_num += 1
+                            else:
+                                # Pacote fora de ordem (P3 chegou, P2 perdido | OU | P2 chegou, P1 perdido)
+                                print(f"[SERVER] Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Descartando.")
+                                
+                                if expected_seq_num > 1:
+                                    # Cenário 1 (Perda no Meio): Já recebemos P1 (expected_seq_num > 1).
+                                    # Reenvia o ACK do último pacote recebido (P1).
+                                    ack_to_send = expected_seq_num - 1
+                                    print(f"[SERVER] Reenviando ACK para {ack_to_send} (sinalizando que ainda espera {expected_seq_num}).")
+                                    ack_packet = f"TIPO:ACK|SEQ:{ack_to_send}".encode('utf-8')
+                                    conn.sendall(ack_packet)
+                                else:
+                                    # Cenário 2 (Perda Inicial): Não recebemos NADA ainda (expected_seq_num == 1).
+                                    # Descarta silenciosamente, não envia nada.
+                                    print(f"[SERVER] Esperando P1, nenhum ACK enviado.")
                         
                         elif RECOVERY_MODE == 'sr':
                             if seq_num >= expected_seq_num:
@@ -130,17 +158,11 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                                 print(f"[SERVER] Pacote duplicado Seq={seq_num}. Reenviando ACK.")
 
                     except socket.timeout:
-                        if ack_is_pending:
-                            ack_packet = f"TIPO:ACK|SEQ:{expected_seq_num}".encode('utf-8')
-                            conn.sendall(ack_packet)
-                            print(f"[SERVER] Pausa detectada. ENVIANDO ACK CUMULATIVO: ACK={expected_seq_num} (confirmando tudo até {expected_seq_num-1}).")
-                            ack_is_pending = False
+                        # Este bloco não deve mais ser executado, pois removemos o timeout
+                        pass
                 
-                if ack_is_pending:
-                    ack_packet = f"TIPO:ACK|SEQ:{expected_seq_num}".encode('utf-8')
-                    conn.sendall(ack_packet)
-                    print(f"[SERVER] Finalizando. ENVIANDO ACK CUMULATIVO FINAL: ACK={expected_seq_num} (confirmando tudo até {expected_seq_num-1}).")
-
+                # ALTERAÇÃO: Removido 'if ack_is_pending:' no final
+                
                 print("\n" + "="*40)
                 print("TRANSMISSÃO FINALIZADA. RECONSTRUINDO MENSAGEM...")
                 if not reconstructed_message:
