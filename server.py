@@ -51,14 +51,15 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 RECOVERY_MODE = params.get("RECOVERY", "gbn")
                 CLIENT_WINDOW = params.get("WINDOW", "")
                 
+                ACK_MODE = params.get("ACK_MODE", "individual") 
 
                 if CLIENT_WINDOW and CLIENT_WINDOW.isdigit():
                     client_window_size = int(CLIENT_WINDOW)
                     WINDOW_SIZE = min(SERVER_WINDOW_SIZE, client_window_size)
-                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()} com Janela={client_window_size}.")
+                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}, Janela={client_window_size}, ACK={ACK_MODE.upper()}.")
                 else:
                     WINDOW_SIZE = SERVER_WINDOW_SIZE
-                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}.")
+                    print(f"[HANDSHAKE] Cliente solicitou Modo={RECOVERY_MODE.upper()}, ACK={ACK_MODE.upper()}.")
                 
                 print(f"[HANDSHAKE] Servidor DEFINIU Janela={WINDOW_SIZE}.")
                 
@@ -66,12 +67,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 conn.sendall(handshake_response.encode('utf-8'))
 
                 reconstructed_message = {}
-                # ALTERAÇÃO: Numeração baseada em 1
                 expected_seq_num = 1
                 selective_repeat_buffer = {}
                 
-                # ALTERAÇÃO: Removido 'ack_is_pending' e 'conn.settimeout(0.5)'
-                # Socket agora é bloqueante por padrão para aguardar pacotes
                 conn.settimeout(None)
 
                 while True:
@@ -97,71 +95,73 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         if checksum_calculated != checksum_received:
                             print(f"[SERVER] PACOTE COM ERRO! Seq={seq_num}. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received} vs Calculado: {checksum_calculated}).")
                             
-                            # A lógica de NACK para ERRO (não PERDA) permanece
                             if RECOVERY_MODE == 'sr':
                                 nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
-                                conn.sendall(nack_packet)
+                                conn.sendall(nack_packet) 
                                 print(f"[SERVER] (SR) ENVIANDO NACK para Seq={seq_num}.")
                             elif RECOVERY_MODE == 'gbn':
-                                # Mantendo a lógica original do arquivo (enviar NACK) para o MODO ERRO.
-                                # A sua solicitação foi apenas para o MODO PERDA.
                                 print(f"[SERVER] (GBN) Pacote com erro. Enviando NACK.")
                                 nack_packet = f"TIPO:NACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(nack_packet)
 
                             continue
 
-                        print(f"[SERVER] Pacote Seq={seq_num} recebido. Conteúdo: '{data_decrypted}' -> '{data_encrypted}' (Checksum: {checksum_received})")
+                        if RECOVERY_MODE == 'gbn':
+                            print(f"[SERVER] (GBN) Pacote Seq={seq_num} recebido. Conteúdo: '{data_decrypted}'")
 
                         if RECOVERY_MODE == 'gbn':
-                            # --- ESTA É A LÓGICA GBN SOLICITADA ---
-                            
                             if seq_num == expected_seq_num:
-                                # Cenário 1 (Recebe P1) ou Cenário 2 (Recebe P1 após retransmissão)
-                                print(f"[SERVER] Pacote Seq={seq_num} recebido em ordem.")
+                                print(f"[SERVER] (GBN) Pacote Seq={seq_num} recebido em ordem.")
                                 reconstructed_message[seq_num] = data_decrypted
                                 
-                                # Envia ACK imediato (ACK N para Pacote N)
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
                                 conn.sendall(ack_packet)
-                                print(f"[SERVER] ENVIANDO ACK para Seq={seq_num}.")
+                                print(f"[SERVER] (GBN) ENVIANDO ACK para Seq={seq_num}.")
                                 
                                 expected_seq_num += 1
                             else:
-                                # Pacote fora de ordem (P3 chegou, P2 perdido | OU | P2 chegou, P1 perdido)
-                                print(f"[SERVER] Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Descartando.")
+                                print(f"[SERVER] (GBN) Pacote Seq={seq_num} fora de ordem (esperando {expected_seq_num}). Descartando.")
                                 
                                 if expected_seq_num > 1:
-                                    # Cenário 1 (Perda no Meio): Já recebemos P1 (expected_seq_num > 1).
-                                    # Reenvia o ACK do último pacote recebido (P1).
                                     ack_to_send = expected_seq_num - 1
-                                    print(f"[SERVER] Reenviando ACK para {ack_to_send} (sinalizando que ainda espera {expected_seq_num}).")
+                                    print(f"[SERVER] (GBN) Reenviando ACK para {ack_to_send} (sinalizando que ainda espera {expected_seq_num}).")
                                     ack_packet = f"TIPO:ACK|SEQ:{ack_to_send}".encode('utf-8')
                                     conn.sendall(ack_packet)
                                 else:
-                                    # Cenário 2 (Perda Inicial): Não recebemos NADA ainda (expected_seq_num == 1).
-                                    # Descarta silenciosamente, não envia nada.
-                                    print(f"[SERVER] Esperando P1, nenhum ACK enviado.")
+                                    print(f"[SERVER] (GBN) Esperando P1, nenhum ACK enviado.")
                         
                         elif RECOVERY_MODE == 'sr':
+                            print(f"[SERVER] (SR) Pacote Seq={seq_num} recebido. Conteúdo: '{data_decrypted}'")
+
                             if seq_num >= expected_seq_num:
                                 selective_repeat_buffer[seq_num] = data_decrypted
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
-                                conn.sendall(ack_packet)
-                                print(f"[SERVER] Enviando ACK para Seq={seq_num}.")
+                                
+                                if ACK_MODE == 'individual':
+                                    conn.sendall(ack_packet)
+                                    print(f"[SERVER] (SR) Enviando ACK (Individual) para Seq={seq_num}.")
+                                else:
+                                    print(f"[SERVER] (SR) ACK (Grupo) para Seq={seq_num} retido.")
+
                                 while expected_seq_num in selective_repeat_buffer:
                                     reconstructed_message[expected_seq_num] = selective_repeat_buffer.pop(expected_seq_num)
                                     expected_seq_num += 1
                             else:
                                 ack_packet = f"TIPO:ACK|SEQ:{seq_num}".encode('utf-8')
-                                conn.sendall(ack_packet)
-                                print(f"[SERVER] Pacote duplicado Seq={seq_num}. Reenviando ACK.")
+                                
+                                if ACK_MODE == 'individual':
+                                    conn.sendall(ack_packet)
+                                    print(f"[SERVER] (SR) Pacote duplicado Seq={seq_num}. Reenviando ACK (Individual).")
 
                     except socket.timeout:
-                        # Este bloco não deve mais ser executado, pois removemos o timeout
                         pass
                 
-                # ALTERAÇÃO: Removido 'if ack_is_pending:' no final
+                if RECOVERY_MODE == 'sr' and ACK_MODE == 'grupo':
+                    last_seq_received = expected_seq_num - 1
+                    if last_seq_received > 0:
+                        print(f"[SERVER] (SR) ENVIANDO ACK DE GRUPO final cumulativo para Seq={last_seq_received}.")
+                        ack_packet = f"TIPO:ACK|SEQ:{last_seq_received}".encode('utf-8')
+                        conn.sendall(ack_packet)
                 
                 print("\n" + "="*40)
                 print("TRANSMISSÃO FINALIZADA. RECONSTRUINDO MENSAGEM...")
