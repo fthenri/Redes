@@ -2,7 +2,7 @@ import socket
 import random
 import time
 
-def caesar_cipher(text, shift, encrypt=False):
+def caesar_cipher(text, shift, encrypt=True):
     if not encrypt:
         shift = -shift
     result = ""
@@ -10,6 +10,10 @@ def caesar_cipher(text, shift, encrypt=False):
         if char.isalpha():
             start = ord('a') if char.islower() else ord('A')
             shifted = (ord(char) - start + shift) % 26
+            result += chr(start + shifted)
+        elif char.isdigit():
+            start = ord('0')
+            shifted = (ord(char) - start + shift) % 10 
             result += chr(start + shifted)
         else:
             result += char
